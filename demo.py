@@ -4,6 +4,7 @@ from argparse import RawTextHelpFormatter
 import glob
 from os import makedirs
 from os.path import join, exists, basename, splitext
+from pathlib import Path
 # 3p
 import cv2
 from tqdm import tqdm
@@ -14,25 +15,29 @@ from exposure_enhancement import enhance_image_exposure
 def main(args):
     # load images
     imdir = args.folder
-    ext = ['png', 'jpg', 'bmp']    # Add image formats here
-    files = []
-    [files.extend(glob.glob(imdir + '*.' + e)) for e in ext]
-    images = [cv2.imread(file) for file in files]
+    # ext = ['png', 'jpg', 'bmp']    # Add image formats here
+    # files = []
+    # [files.extend(glob.glob(imdir + '*.' + e)) for e in ext]
+    imdir_path = Path(imdir)
+    images = imdir_path.glob("*/*original.png")
+    # images = [cv2.imread(file) for file in files]
 
     # create save directory
-    directory = join(imdir, "enhanced")
+    directory = Path("../data/output/LIME")
     if not exists(directory):
         makedirs(directory)
 
     # enhance images
     for i, image in tqdm(enumerate(images), desc="Enhancing images"):
-        enhanced_image = enhance_image_exposure(image, args.gamma, args.lambda_, not args.lime,
-                                                sigma=args.sigma, bc=args.bc, bs=args.bs, be=args.be, eps=args.eps)
-        filename = basename(files[i])
-        name, ext = splitext(filename)
-        method = "LIME" if args.lime else "DUAL"
-        corrected_name = f"{name}_{method}_g{args.gamma}_l{args.lambda_}{ext}"
-        cv2.imwrite(join(directory, corrected_name), enhanced_image)
+        enhanced_image, R, L = enhance_image_exposure(cv2.imread(str(image)), args.gamma, args.lambda_, not args.lime,
+                                                      sigma=args.sigma, bc=args.bc, bs=args.bs, be=args.be, eps=args.eps)
+        # filename = basename(files[i])
+        # name, ext = splitext(filename)
+        # method = "LIME" # if args.lime else "DUAL"
+        # corrected_name = f"{name}_{method}_g{args.gamma}_l{args.lambda_}{ext}"
+        cv2.imwrite(str(directory / (str(image.parent.name) + "_" + str(image.name))), enhanced_image)
+        cv2.imwrite(str(directory / (str(image.parent.name) + "_" + str(image.stem))) + "_R.png", R)
+        cv2.imwrite(str(directory / (str(image.parent.name) + "_" + str(image.stem))) + "_L.png", L)
 
 
 if __name__ == "__main__":
@@ -42,7 +47,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("-f", '--folder', default='./demo/', type=str,
                         help="folder path to test images.")
-    parser.add_argument("-g", '--gamma', default=0.6, type=float,
+    parser.add_argument("-g", '--gamma', default=0.8, type=float,
                         help="the gamma correction parameter.")
     parser.add_argument("-l", '--lambda_', default=0.15, type=float,
                         help="the weight for balancing the two terms in the illumination refinement optimization objective.")

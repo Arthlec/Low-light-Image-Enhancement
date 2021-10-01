@@ -7,6 +7,7 @@ from scipy.sparse import diags, csr_matrix
 from scipy.sparse.linalg import spsolve
 # project
 from utils import get_sparse_neighbor
+import bm3d
 
 
 def create_spacial_affinity_kernel(spatial_sigma: float, size: int = 15):
@@ -72,13 +73,12 @@ def fuse_multi_exposure_images(im: np.ndarray, under_ex: np.ndarray, over_ex: np
     return fused_images
 
 
-def refine_illumination_map_linear(L: np.ndarray, gamma: float, lambda_: float, kernel: np.ndarray, eps: float = 1e-3):
+def refine_illumination_map_linear(L: np.ndarray, lambda_: float, kernel: np.ndarray, eps: float = 1e-3):
     """Refine the illumination map based on the optimization problem described in the two papers.
        This function use the sped-up solver presented in the LIME paper.
 
     Arguments:
         L {np.ndarray} -- the illumination map to be refined.
-        gamma {float} -- gamma correction factor.
         lambda_ {float} -- coefficient to balance the terms in the optimization problem.
         kernel {np.ndarray} -- spatial affinity matrix.
 
@@ -115,13 +115,10 @@ def refine_illumination_map_linear(L: np.ndarray, gamma: float, lambda_: float, 
     A = Id + lambda_ * F
     L_refined = spsolve(csr_matrix(A), L_1d, permc_spec=None, use_umfpack=True).reshape((n, m))
 
-    # gamma correction
-    L_refined = np.clip(L_refined, eps, 1) ** gamma
-
     return L_refined
 
 
-def correct_underexposure(im: np.ndarray, gamma: float, lambda_: float, kernel: np.ndarray, eps: float = 1e-3):
+def correct_underexposure(im: np.ndarray, gamma: float, lambda_: float, kernel: np.ndarray, eps: float = 1e-3, denoising : bool = True):
     """correct underexposudness using the retinex based algorithm presented in DUAL and LIME paper.
 
     Arguments:
@@ -140,17 +137,29 @@ def correct_underexposure(im: np.ndarray, gamma: float, lambda_: float, kernel: 
     # first estimation of the illumination map
     L = np.max(im, axis=-1)
     # illumination refinement
-    L_refined = refine_illumination_map_linear(L, gamma, lambda_, kernel, eps)
-
-    # correct image underexposure
+    L_refined = refine_illumination_map_linear(L, lambda_, kernel, eps)
+    
     L_refined_3d = np.repeat(L_refined[..., None], 3, axis=-1)
-    im_corrected = im / L_refined_3d
-    return im_corrected
+    R = im / L_refined_3d
+    
+    # gamma correction
+    L_refined_3d = np.clip(L_refined_3d, eps, 1) ** gamma
+
+    # denoising the reflectance
+    if denoising:
+        R_yuv = np.float32(R)
+        R_yuv = cv2.cvtColor(R_yuv, cv2.COLOR_BGR2YUV)
+        R_yuv[:,:,0] = bm3d.bm3d(R_yuv[:,:,0], sigma_psd=30/255, stage_arg=bm3d.BM3DStages.HARD_THRESHOLDING)
+        R_d = cv2.cvtColor(R_yuv, cv2.COLOR_YUV2BGR)
+        im_corrected = R * L_refined_3d + R_d * (np.ones_like(L_refined_3d)-L_refined_3d)
+    else:
+        im_corrected = R * L_refined_3d
+    return im_corrected, R, L_refined_3d
 
 # TODO: resize image if too large, optimization take too much time
 
 
-def enhance_image_exposure(im: np.ndarray, gamma: float, lambda_: float, dual: bool = True, sigma: int = 3,
+def enhance_image_exposure(im: np.ndarray, gamma: float, lambda_: float, dual: bool = False, sigma: int = 3,
                            bc: float = 1, bs: float = 1, be: float = 1, eps: float = 1e-3):
     """Enhance input image, using either DUAL method, or LIME method. For more info, please see original papers.
 
@@ -175,16 +184,16 @@ def enhance_image_exposure(im: np.ndarray, gamma: float, lambda_: float, dual: b
 
     # correct underexposudness
     im_normalized = im.astype(float) / 255.
-    under_corrected = correct_underexposure(im_normalized, gamma, lambda_, kernel, eps)
+    under_corrected, R, L = correct_underexposure(im_normalized, gamma, lambda_, kernel, eps)
 
-    if dual:
-        # correct overexposure and merge if DUAL method is selected
-        inv_im_normalized = 1 - im_normalized
-        over_corrected = 1 - correct_underexposure(inv_im_normalized, gamma, lambda_, kernel, eps)
-        # fuse images
-        im_corrected = fuse_multi_exposure_images(im_normalized, under_corrected, over_corrected, bc, bs, be)
-    else:
-        im_corrected = under_corrected
+    # if dual:
+    #     # correct overexposure and merge if DUAL method is selected
+    #     inv_im_normalized = 1 - im_normalized
+    #     over_corrected = 1 - correct_underexposure(inv_im_normalized, gamma, lambda_, kernel, eps)
+    #     # fuse images
+    #     im_corrected = fuse_multi_exposure_images(im_normalized, under_corrected, over_corrected, bc, bs, be)
+    # else:
+    im_corrected = under_corrected
 
     # convert to 8 bits and returns
-    return np.clip(im_corrected * 255, 0, 255).astype("uint8")
+    return np.clip(im_corrected * 255, 0, 255).astype("uint8"), np.clip(R * 255, 0, 255).astype("uint8"), np.clip(L * 255, 0, 255).astype("uint8")
